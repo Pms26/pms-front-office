@@ -1,13 +1,32 @@
-const Booking = require('../models/Booking');
-const Room = require('../models/Room');
-const Folio = require('../models/Folio');
-const FolioItem = require('../models/FolioItem');
+const { eq, and, inArray, sql } = require('drizzle-orm');
+const db = require('../config/database');
+const bookingsTable = require('../schema/bookings');
+const roomsTable = require('../schema/rooms');
+const customersTable = require('../schema/customers');
+const foliosTable = require('../schema/folios');
+const folioItemsTable = require('../schema/folioItems');
 
 exports.processCheckIn = async (req, res) => {
   try {
     const { bookingId } = req.params;
 
-    const booking = await Booking.findById(bookingId).populate('roomId').populate('customerId');
+    const [booking] = await db
+      .select({
+        id: bookingsTable.id,
+        bookingRef: bookingsTable.bookingRef,
+        status: bookingsTable.status,
+        roomId: bookingsTable.roomId,
+        customerId: bookingsTable.customerId,
+        agencyId: bookingsTable.agencyId,
+        checkInDate: bookingsTable.checkInDate,
+        checkOutDate: bookingsTable.checkOutDate,
+        optionExpiryDate: bookingsTable.optionExpiryDate,
+        roomRate: bookingsTable.roomRate,
+      })
+      .from(bookingsTable)
+      .where(eq(bookingsTable.id, bookingId))
+      .limit(1);
+
     if (!booking) {
       return res.status(404).json({ error: 'Réservation introuvable' });
     }
@@ -16,11 +35,16 @@ exports.processCheckIn = async (req, res) => {
       return res.status(400).json({ error: `Check-in impossible. Statut actuel: ${booking.status}` });
     }
 
-    if (booking.status === 'option' && (!booking.optionExpiryDate || booking.optionExpiryDate < new Date())) {
+    if (booking.status === 'option' && (!booking.optionExpiryDate || new Date(booking.optionExpiryDate) < new Date())) {
       return res.status(400).json({ error: 'Option expirée. Réservation non confirmée.' });
     }
 
-    const room = await Room.findById(booking.roomId._id);
+    const [room] = await db
+      .select()
+      .from(roomsTable)
+      .where(eq(roomsTable.id, booking.roomId))
+      .limit(1);
+
     if (!room) {
       return res.status(404).json({ error: 'Chambre introuvable' });
     }
@@ -29,41 +53,58 @@ exports.processCheckIn = async (req, res) => {
       return res.status(400).json({ error: `Chambre non prête. Statut: ${room.housekeepingStatus}` });
     }
 
-    booking.status = 'checked_in';
-    booking.actualCheckIn = new Date();
-    await booking.save();
+    const today = new Date().toISOString().slice(0, 10);
 
-    room.housekeepingStatus = 'sale';
-    await room.save();
+    await db
+      .update(bookingsTable)
+      .set({ status: 'checked_in', actualCheckIn: today, updatedAt: new Date() })
+      .where(eq(bookingsTable.id, bookingId));
 
-    const folioA = await Folio.create({
-      bookingId: booking._id,
-      folioType: 'A',
-      label: `Folio Client - ${booking.customerId.firstName} ${booking.customerId.lastName}`,
-      status: 'open'
-    });
+    await db
+      .update(roomsTable)
+      .set({ housekeepingStatus: 'sale', updatedAt: new Date() })
+      .where(eq(roomsTable.id, booking.roomId));
+
+    const [customer] = await db
+      .select()
+      .from(customersTable)
+      .where(eq(customersTable.id, booking.customerId))
+      .limit(1);
+
+    const [folioA] = await db
+      .insert(foliosTable)
+      .values({
+        bookingId,
+        folioType: 'A',
+        label: `Folio Client - ${customer ? `${customer.firstName} ${customer.lastName}` : ''}`,
+        status: 'open'
+      })
+      .returning();
 
     let folioB = null;
     if (booking.agencyId) {
-      folioB = await Folio.create({
-        bookingId: booking._id,
-        folioType: 'B',
-        label: `Folio Agence - ${booking.agencyId}`,
-        status: 'open'
-      });
+      [folioB] = await db
+        .insert(foliosTable)
+        .values({
+          bookingId,
+          folioType: 'B',
+          label: `Folio Agence - ${booking.agencyId}`,
+          status: 'open'
+        })
+        .returning();
     }
 
     res.json({
       message: 'Check-in effectué avec succès',
       booking: {
-        id: booking._id,
-        status: booking.status,
-        actualCheckIn: booking.actualCheckIn,
+        id: booking.id,
+        status: 'checked_in',
+        actualCheckIn: today,
         room: room.roomNumber
       },
       folios: {
-        folioA: { id: folioA._id, type: 'A' },
-        folioB: folioB ? { id: folioB._id, type: 'B' } : null
+        folioA: { id: folioA.id, type: 'A' },
+        folioB: folioB ? { id: folioB.id, type: 'B' } : null
       }
     });
   } catch (err) {
@@ -75,22 +116,35 @@ exports.getCheckInDetails = async (req, res) => {
   try {
     const { bookingId } = req.params;
 
-    const booking = await Booking.findById(bookingId)
-      .populate('customerId')
-      .populate('roomId')
-      .populate('agencyId');
+    const [booking] = await db
+      .select()
+      .from(bookingsTable)
+      .where(eq(bookingsTable.id, bookingId))
+      .limit(1);
 
     if (!booking) {
       return res.status(404).json({ error: 'Réservation introuvable' });
     }
 
+    const [customer] = await db
+      .select()
+      .from(customersTable)
+      .where(eq(customersTable.id, booking.customerId))
+      .limit(1);
+
+    const [room] = await db
+      .select()
+      .from(roomsTable)
+      .where(eq(roomsTable.id, booking.roomId))
+      .limit(1);
+
     res.json({
       booking: {
-        id: booking._id,
+        id: booking.id,
         ref: booking.bookingRef,
         status: booking.status,
-        customer: booking.customerId,
-        room: booking.roomId,
+        customer,
+        room,
         checkInDate: booking.checkInDate,
         checkOutDate: booking.checkOutDate,
         adults: booking.adults,
@@ -100,8 +154,7 @@ exports.getCheckInDetails = async (req, res) => {
         totalAmount: booking.totalAmount,
         deposit: booking.deposit,
         specialRequests: booking.specialRequests,
-        marketSegment: booking.marketSegment,
-        agency: booking.agencyId
+        marketSegment: booking.marketSegment
       }
     });
   } catch (err) {
@@ -113,7 +166,12 @@ exports.cancelCheckIn = async (req, res) => {
   try {
     const { bookingId } = req.params;
 
-    const booking = await Booking.findById(bookingId);
+    const [booking] = await db
+      .select()
+      .from(bookingsTable)
+      .where(eq(bookingsTable.id, bookingId))
+      .limit(1);
+
     if (!booking) {
       return res.status(404).json({ error: 'Réservation introuvable' });
     }
@@ -122,25 +180,37 @@ exports.cancelCheckIn = async (req, res) => {
       return res.status(400).json({ error: 'Annulation impossible. Statut actuel: ' + booking.status });
     }
 
-    const folioItems = await FolioItem.countDocuments({
-      folioId: { $in: await Folio.find({ bookingId: booking._id }).distinct('_id') }
-    });
+    const bookingFolios = await db
+      .select({ id: foliosTable.id })
+      .from(foliosTable)
+      .where(eq(foliosTable.bookingId, bookingId));
 
-    if (folioItems > 0) {
-      return res.status(400).json({ error: 'Impossible d\'annuler. Des prestations ont été enregistrées sur le folio.' });
+    const folioIds = bookingFolios.map(f => f.id);
+
+    if (folioIds.length > 0) {
+      const [result] = await db
+        .select({ count: sql`count(*)::int` })
+        .from(folioItemsTable)
+        .where(inArray(folioItemsTable.folioId, folioIds));
+
+      if (result.count > 0) {
+        return res.status(400).json({ error: 'Impossible d\'annuler. Des prestations ont été enregistrées sur le folio.' });
+      }
     }
 
-    booking.status = 'confirmed';
-    booking.actualCheckIn = null;
-    await booking.save();
+    await db
+      .update(bookingsTable)
+      .set({ status: 'confirmed', actualCheckIn: null, updatedAt: new Date() })
+      .where(eq(bookingsTable.id, bookingId));
 
-    const room = await Room.findById(booking.roomId);
-    if (room) {
-      room.housekeepingStatus = 'propre';
-      await room.save();
+    await db
+      .update(roomsTable)
+      .set({ housekeepingStatus: 'propre', updatedAt: new Date() })
+      .where(eq(roomsTable.id, booking.roomId));
+
+    if (folioIds.length > 0) {
+      await db.delete(foliosTable).where(eq(foliosTable.bookingId, bookingId));
     }
-
-    await Folio.deleteMany({ bookingId: booking._id });
 
     res.json({ message: 'Check-in annulé avec succès', booking });
   } catch (err) {

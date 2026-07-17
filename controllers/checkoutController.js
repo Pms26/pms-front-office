@@ -1,15 +1,23 @@
-const Booking = require('../models/Booking');
-const Room = require('../models/Room');
-const Folio = require('../models/Folio');
-const FolioItem = require('../models/FolioItem');
-const Payment = require('../models/Payment');
+const { eq, and, asc } = require('drizzle-orm');
+const db = require('../config/database');
+const bookingsTable = require('../schema/bookings');
+const roomsTable = require('../schema/rooms');
+const customersTable = require('../schema/customers');
+const foliosTable = require('../schema/folios');
+const folioItemsTable = require('../schema/folioItems');
+const paymentsTable = require('../schema/payments');
 
 exports.processCheckOut = async (req, res) => {
   try {
     const { bookingId } = req.params;
     const { payments } = req.body;
 
-    const booking = await Booking.findById(bookingId).populate('roomId').populate('customerId');
+    const [booking] = await db
+      .select()
+      .from(bookingsTable)
+      .where(eq(bookingsTable.id, bookingId))
+      .limit(1);
+
     if (!booking) {
       return res.status(404).json({ error: 'Réservation introuvable' });
     }
@@ -18,14 +26,19 @@ exports.processCheckOut = async (req, res) => {
       return res.status(400).json({ error: `Check-out impossible. Statut actuel: ${booking.status}` });
     }
 
-    const folios = await Folio.find({ bookingId: booking._id });
+    const folios = await db
+      .select()
+      .from(foliosTable)
+      .where(eq(foliosTable.bookingId, bookingId));
 
     let totalCharges = 0;
-    let totalPaid = 0;
 
     for (const folio of folios) {
-      const items = await FolioItem.find({ folioId: folio._id });
-      const folioTotal = items.reduce((sum, item) => sum + item.totalAmount, 0);
+      const items = await db
+        .select()
+        .from(folioItemsTable)
+        .where(eq(folioItemsTable.folioId, folio.id));
+      const folioTotal = items.reduce((sum, item) => sum + parseFloat(item.totalAmount), 0);
       totalCharges += folioTotal;
     }
 
@@ -34,6 +47,7 @@ exports.processCheckOut = async (req, res) => {
     }
 
     const validMethods = ['cb', 'esp', 'chq', 'virement', 'debiteur'];
+    let totalPaid = 0;
     for (const payment of payments) {
       if (!validMethods.includes(payment.paymentMethod)) {
         return res.status(400).json({ error: `Mode de paiement invalide: ${payment.paymentMethod}` });
@@ -47,44 +61,52 @@ exports.processCheckOut = async (req, res) => {
         return res.status(400).json({ error: `Folio ${payment.folioType || 'A'} introuvable` });
       }
 
-      await Payment.create({
-        bookingId: booking._id,
-        folioId: folio._id,
-        amount: payment.amount,
+      await db.insert(paymentsTable).values({
+        bookingId,
+        folioId: folio.id,
+        amount: String(payment.amount),
         paymentMethod: payment.paymentMethod,
         cardType: payment.cardType || null,
         reference: payment.reference || null,
-        receivedBy: req.user?.id || null
+        processedAt: new Date()
       });
     }
 
-    booking.status = 'checked_out';
-    booking.actualCheckOut = new Date();
-    await booking.save();
+    const today = new Date().toISOString().slice(0, 10);
+
+    await db
+      .update(bookingsTable)
+      .set({ status: 'checked_out', actualCheckOut: today, updatedAt: new Date() })
+      .where(eq(bookingsTable.id, bookingId));
 
     for (const folio of folios) {
-      folio.status = 'closed';
-      folio.closedAt = new Date();
-      await folio.save();
+      await db
+        .update(foliosTable)
+        .set({ status: 'closed', closedAt: new Date(), updatedAt: new Date() })
+        .where(eq(foliosTable.id, folio.id));
     }
 
-    const room = await Room.findById(booking.roomId._id);
-    if (room) {
-      room.housekeepingStatus = 'sale';
-      room.blockReason = null;
-      await room.save();
-    }
+    await db
+      .update(roomsTable)
+      .set({ housekeepingStatus: 'sale', blockReason: null, updatedAt: new Date() })
+      .where(eq(roomsTable.id, booking.roomId));
 
-    const totalDeposit = booking.deposit || 0;
+    const totalDeposit = parseFloat(booking.deposit) || 0;
     const remainingBalance = totalCharges - totalPaid - totalDeposit;
+
+    const [room] = await db
+      .select()
+      .from(roomsTable)
+      .where(eq(roomsTable.id, booking.roomId))
+      .limit(1);
 
     res.json({
       message: 'Check-out effectué avec succès',
       booking: {
-        id: booking._id,
-        status: booking.status,
-        actualCheckOut: booking.actualCheckOut,
-        room: room.roomNumber
+        id: booking.id,
+        status: 'checked_out',
+        actualCheckOut: today,
+        room: room ? room.roomNumber : null
       },
       summary: {
         totalCharges,
@@ -102,9 +124,11 @@ exports.getStatement = async (req, res) => {
   try {
     const { bookingId } = req.params;
 
-    const booking = await Booking.findById(bookingId)
-      .populate('customerId')
-      .populate('roomId');
+    const [booking] = await db
+      .select()
+      .from(bookingsTable)
+      .where(eq(bookingsTable.id, bookingId))
+      .limit(1);
 
     if (!booking) {
       return res.status(404).json({ error: 'Réservation introuvable' });
@@ -114,18 +138,37 @@ exports.getStatement = async (req, res) => {
       return res.status(400).json({ error: 'Extrait disponible uniquement pour les séjours en cours ou terminés' });
     }
 
-    const folios = await Folio.find({ bookingId: booking._id });
+    const [customer] = await db
+      .select()
+      .from(customersTable)
+      .where(eq(customersTable.id, booking.customerId))
+      .limit(1);
+
+    const [room] = await db
+      .select()
+      .from(roomsTable)
+      .where(eq(roomsTable.id, booking.roomId))
+      .limit(1);
+
+    const folios = await db
+      .select()
+      .from(foliosTable)
+      .where(eq(foliosTable.bookingId, bookingId));
 
     const foliosWithItems = await Promise.all(
       folios.map(async (folio) => {
-        const items = await FolioItem.find({ folioId: folio._id }).sort({ date: 1 });
+        const items = await db
+          .select()
+          .from(folioItemsTable)
+          .where(eq(folioItemsTable.folioId, folio.id))
+          .orderBy(asc(folioItemsTable.date));
         return {
-          id: folio._id,
+          id: folio.id,
           type: folio.folioType,
           label: folio.label,
           status: folio.status,
           items: items.map(item => ({
-            id: item._id,
+            id: item.id,
             description: item.description,
             category: item.category,
             quantity: item.quantity,
@@ -135,30 +178,33 @@ exports.getStatement = async (req, res) => {
             isVisibleOnPrint: item.isVisibleOnPrint,
             date: item.date
           })),
-          totalAmount: items.reduce((sum, item) => sum + item.totalAmount, 0)
+          totalAmount: items.reduce((sum, item) => sum + parseFloat(item.totalAmount), 0)
         };
       })
     );
 
-    const payments = await Payment.find({ bookingId: booking._id });
+    const paymts = await db
+      .select()
+      .from(paymentsTable)
+      .where(eq(paymentsTable.bookingId, bookingId));
 
     res.json({
       booking: {
         ref: booking.bookingRef,
-        customer: `${booking.customerId.firstName} ${booking.customerId.lastName}`,
-        room: booking.roomId.roomNumber,
+        customer: customer ? `${customer.firstName} ${customer.lastName}` : '',
+        room: room ? room.roomNumber : '',
         checkIn: booking.actualCheckIn,
         checkOut: booking.actualCheckOut || null,
-        nights: Math.ceil((booking.checkOutDate - booking.checkInDate) / (1000 * 60 * 60 * 24))
+        nights: Math.ceil((new Date(booking.checkOutDate) - new Date(booking.checkInDate)) / (1000 * 60 * 60 * 24))
       },
       folios: foliosWithItems,
-      payments: payments.map(p => ({
-        amount: p.amount,
+      payments: paymts.map(p => ({
+        amount: parseFloat(p.amount),
         method: p.paymentMethod,
         date: p.processedAt
       })),
       totalCharges: foliosWithItems.reduce((sum, f) => sum + f.totalAmount, 0),
-      totalPaid: payments.reduce((sum, p) => sum + p.amount, 0)
+      totalPaid: paymts.reduce((sum, p) => sum + parseFloat(p.amount), 0)
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

@@ -1,13 +1,19 @@
-const Room = require('../models/Room');
+const { eq, and, asc } = require('drizzle-orm');
+const db = require('../config/database');
+const roomsTable = require('../schema/rooms');
 
 exports.getAllRooms = async (req, res) => {
   try {
-    const rooms = await Room.find({ isActive: true }).sort({ floor: 1, roomNumber: 1 });
+    const rooms = await db
+      .select()
+      .from(roomsTable)
+      .where(eq(roomsTable.isActive, true))
+      .orderBy(asc(roomsTable.floor), asc(roomsTable.roomNumber));
 
     res.json({
       count: rooms.length,
       rooms: rooms.map(room => ({
-        id: room._id,
+        id: room.id,
         roomNumber: room.roomNumber,
         category: room.category,
         floor: room.floor,
@@ -24,13 +30,18 @@ exports.getAllRooms = async (req, res) => {
 
 exports.getRoomById = async (req, res) => {
   try {
-    const room = await Room.findById(req.params.roomId);
+    const [room] = await db
+      .select()
+      .from(roomsTable)
+      .where(eq(roomsTable.id, req.params.roomId))
+      .limit(1);
+
     if (!room) {
       return res.status(404).json({ error: 'Chambre introuvable' });
     }
 
     res.json({
-      id: room._id,
+      id: room.id,
       roomNumber: room.roomNumber,
       category: room.category,
       floor: room.floor,
@@ -49,8 +60,13 @@ exports.updateRoomStatus = async (req, res) => {
     const { roomId } = req.params;
     const { housekeepingStatus, blockReason } = req.body;
 
-    const room = await Room.findById(roomId);
-    if (!room) {
+    const [existing] = await db
+      .select()
+      .from(roomsTable)
+      .where(eq(roomsTable.id, roomId))
+      .limit(1);
+
+    if (!existing) {
       return res.status(404).json({ error: 'Chambre introuvable' });
     }
 
@@ -64,17 +80,23 @@ exports.updateRoomStatus = async (req, res) => {
       }
     }
 
-    room.housekeepingStatus = housekeepingStatus;
-    room.blockReason = housekeepingStatus === 'bloquee' ? blockReason : null;
-    await room.save();
+    const [updated] = await db
+      .update(roomsTable)
+      .set({
+        housekeepingStatus,
+        blockReason: housekeepingStatus === 'bloquee' ? blockReason : null,
+        updatedAt: new Date()
+      })
+      .where(eq(roomsTable.id, roomId))
+      .returning();
 
     res.json({
       message: 'Statut mis à jour',
       room: {
-        id: room._id,
-        roomNumber: room.roomNumber,
-        housekeepingStatus: room.housekeepingStatus,
-        blockReason: room.blockReason
+        id: updated.id,
+        roomNumber: updated.roomNumber,
+        housekeepingStatus: updated.housekeepingStatus,
+        blockReason: updated.blockReason
       }
     });
   } catch (err) {
@@ -91,13 +113,16 @@ exports.getRoomsByStatus = async (req, res) => {
       return res.status(400).json({ error: 'Statut invalide' });
     }
 
-    const rooms = await Room.find({ housekeepingStatus: status, isActive: true });
+    const rooms = await db
+      .select()
+      .from(roomsTable)
+      .where(and(eq(roomsTable.housekeepingStatus, status), eq(roomsTable.isActive, true)));
 
     res.json({
       status,
       count: rooms.length,
       rooms: rooms.map(room => ({
-        id: room._id,
+        id: room.id,
         roomNumber: room.roomNumber,
         category: room.category,
         floor: room.floor,
