@@ -1,0 +1,162 @@
+{
+  "info": {
+    "name": "Front Office - PMS",
+    "description": "API Front Office - Check-in, Check-out, Folios, Rooms",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:4005"
+    },
+    {
+      "key": "bookingId",
+      "value": ""
+    },
+    {
+      "key": "folioId",
+      "value": ""
+    },
+    {
+      "key": "roomId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "🏠 ROOMS",
+      "item": [
+        {
+          "name": "Liste des chambres",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/rooms"
+          }
+        },
+        {
+          "name": "Chambres par statut",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/rooms/status/propre"
+          }
+        },
+        {
+          "name": "Modifier statut chambre",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/rooms/{{roomId}}/status",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"housekeepingStatus\": \"bloquee\",\n  \"blockReason\": \"probleme_technique\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "✅ CHECK-IN",
+      "item": [
+        {
+          "name": "Détails check-in",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/checkin/{{bookingId}}"
+          }
+        },
+        {
+          "name": "Effectuer Check-in",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/checkin/{{bookingId}}",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{}" }
+          }
+        },
+        {
+          "name": "Annuler Check-in",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/checkin/{{bookingId}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "🚪 CHECK-OUT",
+      "item": [
+        {
+          "name": "Extrait de compte",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/checkout/{{bookingId}}/statement"
+          }
+        },
+        {
+          "name": "Effectuer Check-out",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/checkout/{{bookingId}}",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"payments\": [\n    {\n      \"paymentMethod\": \"cb\",\n      \"amount\": 1500,\n      \"cardType\": \"visa\"\n    }\n  ]\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "📋 FOLIOS",
+      "item": [
+        {
+          "name": "Détails folio",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/folios/{{folioId}}"
+          }
+        },
+        {
+          "name": "Ajouter prestation",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/folios/{{folioId}}/items",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"description\": \"Dîner Restaurant\",\n  \"category\": \"restaurant\",\n  \"quantity\": 2,\n  \"unitPrice\": 350,\n  \"taxRate\": 10\n}"
+            }
+          }
+        },
+        {
+          "name": "Masquer une prestation",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/folios/items/{{itemId}}/visibility",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"isVisible\": false\n}" }
+          }
+        },
+        {
+          "name": "Masquage groupé",
+          "request": {
+            "method": "PATCH",
+            "url": "{{baseUrl}}/api/folios/{{folioId}}/items/visibility",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"itemIds\": [\"ITEM_ID_1\", \"ITEM_ID_2\"],\n  \"isVisible\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "Supprimer prestation",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/folios/items/{{itemId}}"
+          }
+        }
+      ]
+    }
+  ]
+}
