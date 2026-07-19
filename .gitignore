@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.local
+.env.*.local
+dist/
+build/
+*.log
+.DS_Store
+Thumbs.db
+check-*.js
+list-*.js
+drizzle/*.sql
+drizzle/meta/
