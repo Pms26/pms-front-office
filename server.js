@@ -12,6 +12,8 @@ app.use('/api/rooms', require('./routes/rooms'));
 app.use('/api/checkin', require('./routes/checkin'));
 app.use('/api/checkout', require('./routes/checkout'));
 app.use('/api/folios', require('./routes/folios'));
+app.use('/api/payments', require('./routes/payments'));
+app.use('/api/invoices', require('./routes/invoices'));
 
 app.get('/', (req, res) => {
   res.json({ service: 'Front Office', status: 'running', port: process.env.PORT });

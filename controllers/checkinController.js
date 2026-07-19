@@ -17,11 +17,12 @@ exports.processCheckIn = async (req, res) => {
         status: bookingsTable.status,
         roomId: bookingsTable.roomId,
         customerId: bookingsTable.customerId,
-        agencyId: bookingsTable.agencyId,
         checkInDate: bookingsTable.checkInDate,
         checkOutDate: bookingsTable.checkOutDate,
         optionExpiryDate: bookingsTable.optionExpiryDate,
         roomRate: bookingsTable.roomRate,
+        billToPartnerId: bookingsTable.billToPartnerId,
+        billToLabel: bookingsTable.billToLabel,
       })
       .from(bookingsTable)
       .where(eq(bookingsTable.id, bookingId))
@@ -82,17 +83,17 @@ exports.processCheckIn = async (req, res) => {
       .returning();
 
     let folioB = null;
-    if (booking.agencyId) {
+    if (booking.billToPartnerId) {
       [folioB] = await db
-        .insert(foliosTable)
-        .values({
-          bookingId,
-          folioType: 'B',
-          label: `Folio Agence - ${booking.agencyId}`,
-          status: 'open'
-        })
-        .returning();
-    }
+      .insert(foliosTable)
+      .values({
+        bookingId,
+        folioType: 'B',
+        label: `Folio Prise en charge - ${booking.billToLabel || booking.billToPartnerId}`,
+        status: 'open'
+    })
+    .returning();
+}
 
     res.json({
       message: 'Check-in effectué avec succès',
@@ -107,9 +108,10 @@ exports.processCheckIn = async (req, res) => {
         folioB: folioB ? { id: folioB.id, type: 'B' } : null
       }
     });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+ } catch (err) {
+  console.error('ERREUR CHECK-IN:', err.stack);
+  res.status(500).json({ error: err.message });
+}
 };
 
 exports.getCheckInDetails = async (req, res) => {

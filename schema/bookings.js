@@ -24,6 +24,8 @@ const bookings = pgTable('bookings', {
   specialRequests: text('special_requests'),
   cancellationPolicy: text('cancellation_policy'),
   marketSegment: varchar('market_segment', { length: 30 }).notNull(),
+  billToPartnerId: uuid('bill_to_partner_id').default(null), // ID du partenaire (service-tarification), pas de FK cross-service
+  billToLabel: varchar('bill_to_label', { length: 100 }).default(null), // nom affiché, dénormalisé pour éviter un appel réseau
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
