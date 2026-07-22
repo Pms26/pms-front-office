@@ -56,8 +56,20 @@ exports.processCheckIn = async (req, res) => {
       return res.status(404).json({ error: 'Chambre introuvable' });
     }
 
-    if (room.housekeepingStatus !== 'controlee' && room.housekeepingStatus !== 'propre') {
-      return res.status(400).json({ error: `Chambre non prête. Statut: ${room.housekeepingStatus}` });
+    // Vérification synchrone de la source d'autorité réelle (housekeeping) afin d'éviter
+    // de baser le check-in sur un statut local obsolète. En cas d'échec réseau ou de timeout,
+    // le check-in est refusé par prudence (fail-closed) pour préserver l'intégrité métier.
+    let freshRoomStatus;
+    try {
+      freshRoomStatus = await housekeepingClient.getRoomStatusByNumero(room.roomNumber, req.headers.authorization);
+    } catch (err) {
+      return res.status(503).json({
+        error: `Impossible de vérifier le statut de la chambre côté housekeeping: ${err.message}`,
+      });
+    }
+
+    if (freshRoomStatus.statut !== 'controlee' && freshRoomStatus.statut !== 'propre') {
+      return res.status(400).json({ error: `Chambre non prête. Statut: ${freshRoomStatus.statut}` });
     }
 
     const today = new Date().toISOString().slice(0, 10);

@@ -2,6 +2,7 @@ const { eq, and, asc } = require('drizzle-orm');
 const { updateRoomStatusByNumero } = require('../src/services/housekeepingClient');
 const db = require('../config/database');
 const roomsTable = require('../schema/rooms');
+const { resolveRoomLookup } = require('../utils/roomIdentifier');
 
 exports.getAllRooms = async (req, res) => {
   try {
@@ -60,11 +61,19 @@ exports.updateRoomStatus = async (req, res) => {
   try {
     const { roomId } = req.params;
     const { housekeepingStatus, blockReason } = req.body;
+    const lookup = resolveRoomLookup(roomId);
+
+    if (!lookup) {
+      return res.status(400).json({ error: 'Identifiant de chambre invalide' });
+    }
+
+    const column = lookup.column === 'id' ? roomsTable.id : roomsTable.roomNumber;
+    const condition = lookup.column === 'id' ? eq(column, lookup.value) : eq(column, lookup.value);
 
     const [existing] = await db
       .select()
       .from(roomsTable)
-      .where(eq(roomsTable.id, roomId))
+      .where(condition)
       .limit(1);
 
     if (!existing) {
