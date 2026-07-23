@@ -45,6 +45,8 @@ exports.getDayInvoices = async (req, res) => {
           folioId: folio.id,
           bookingId: folio.bookingId,
           bookingRef: booking ? booking.bookingRef : null,
+          billToPartnerId: booking ? booking.billToPartnerId : null,
+          billToLabel: booking ? booking.billToLabel : null,
           folioType: folio.folioType,
           label: folio.label,
           closedAt: folio.closedAt,

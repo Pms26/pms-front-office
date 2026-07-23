@@ -3,9 +3,11 @@ const db = require('../config/database');
 const bookingsTable = require('../schema/bookings');
 const roomsTable = require('../schema/rooms');
 const customersTable = require('../schema/customers');
+const marketSegmentsTable = require('../schema/marketSegments');
 const foliosTable = require('../schema/folios');
 const folioItemsTable = require('../schema/folioItems');
 const housekeepingClient = require('../src/services/housekeepingClient');
+const tarificationClient = require('../src/services/tarificationClient');
 
 exports.processCheckIn = async (req, res) => {
   try {
@@ -23,6 +25,7 @@ exports.processCheckIn = async (req, res) => {
         checkOutDate: bookingsTable.checkOutDate,
         optionExpiryDate: bookingsTable.optionExpiryDate,
         roomRate: bookingsTable.roomRate,
+        boardType: bookingsTable.boardType,
         billToPartnerId: bookingsTable.billToPartnerId,
         billToLabel: bookingsTable.billToLabel,
       })
@@ -78,6 +81,40 @@ exports.processCheckIn = async (req, res) => {
       await housekeepingClient.updateRoomStatusByNumero(room.roomNumber, 'sale', null, req.headers.authorization);
     } catch (err) {
       return res.status(502).json({ error: `Impossible de synchroniser le statut de la chambre: ${err.message}` });
+    }
+
+    if (booking.billToPartnerId) {
+      try {
+        const checkIn = new Date(booking.checkInDate);
+        const checkOut = new Date(booking.checkOutDate);
+        const nights = Math.max(1, Math.round((checkOut - checkIn) / (1000 * 60 * 60 * 24)));
+
+        const seasonId = await tarificationClient.resolveSeasonId(booking.checkInDate, req.headers.authorization);
+        if (seasonId) {
+          const result = await tarificationClient.calculateRate({
+            partnerId: booking.billToPartnerId,
+            category: room.category,
+            seasonId,
+            regime: booking.boardType || 'BB',
+            nights,
+          }, req.headers.authorization);
+
+          const prixNet = result?.details?.prixParNuitFinalTTC;
+          if (prixNet && result.details.source === 'tarif_partenaire') {
+            const newRate = parseFloat(prixNet);
+            const currentRate = parseFloat(booking.roomRate || 0);
+            if (newRate !== currentRate) {
+              await db
+                .update(bookingsTable)
+                .set({ roomRate: String(newRate), updatedAt: new Date() })
+                .where(eq(bookingsTable.id, bookingId));
+              booking.roomRate = String(newRate);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[TARIFICATION] Échec calcul tarif partenaire, fallback tarif public:', err.message);
+      }
     }
 
     await db
@@ -158,6 +195,16 @@ exports.getCheckInDetails = async (req, res) => {
       .where(eq(roomsTable.id, booking.roomId))
       .limit(1);
 
+    let marketSegmentLabel = null;
+    if (booking.marketSegmentId) {
+      const [segment] = await db
+        .select()
+        .from(marketSegmentsTable)
+        .where(eq(marketSegmentsTable.id, booking.marketSegmentId))
+        .limit(1);
+      marketSegmentLabel = segment ? segment.label : null;
+    }
+
     res.json({
       booking: {
         id: booking.id,
@@ -174,7 +221,8 @@ exports.getCheckInDetails = async (req, res) => {
         totalAmount: booking.totalAmount,
         deposit: booking.deposit,
         specialRequests: booking.specialRequests,
-        marketSegment: booking.marketSegment
+        marketSegmentId: booking.marketSegmentId,
+        marketSegmentLabel
       }
     });
   } catch (err) {

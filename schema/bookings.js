@@ -1,6 +1,7 @@
 const { pgTable, uuid, varchar, integer, decimal, boolean, text, timestamp, date, index } = require('drizzle-orm/pg-core');
 const rooms = require('./rooms');
 const customers = require('./customers');
+const marketSegments = require('./marketSegments');
 
 const bookings = pgTable('bookings', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -24,7 +25,7 @@ const bookings = pgTable('bookings', {
   taxesAtReservation: boolean('taxes_at_reservation').notNull().default(true),
   specialRequests: text('special_requests'),
   cancellationPolicy: text('cancellation_policy'),
-  marketSegment: varchar('market_segment', { length: 30 }).notNull(),
+  marketSegmentId: uuid('market_segment_id').notNull().references(() => marketSegments.id),
   billToPartnerId: uuid('bill_to_partner_id').default(null), // ID du partenaire (service-tarification), pas de FK cross-service
   billToLabel: varchar('bill_to_label', { length: 100 }).default(null), // nom affiché, dénormalisé pour éviter un appel réseau
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

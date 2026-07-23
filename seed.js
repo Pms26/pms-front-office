@@ -1,9 +1,11 @@
 require('dotenv').config();
 const { Pool } = require('pg');
 const { drizzle } = require('drizzle-orm/node-postgres');
+const { eq } = require('drizzle-orm');
 const schema = require('./schema');
 const roomsTable = require('./schema/rooms');
 const customersTable = require('./schema/customers');
+const marketSegmentsTable = require('./schema/marketSegments');
 const bookingsTable = require('./schema/bookings');
 
 const seed = async () => {
@@ -40,6 +42,15 @@ const seed = async () => {
   const yesterday = new Date(today);
   yesterday.setDate(yesterday.getDate() - 1);
 
+  const insertedSegments = await db.insert(marketSegmentsTable).values([
+    { code: 'direct_phone_mail', label: 'Téléphone/Email direct' },
+    { code: 'ota_booking', label: 'Réservation OTA' },
+    { code: 'direct_walk_in', label: 'Walk-in direct' },
+    { code: 'b2b_corporate', label: 'Corporate B2B' }
+  ]).returning();
+
+  const segmentMap = Object.fromEntries(insertedSegments.map(s => [s.code, s.id]));
+
   await db.insert(bookingsTable).values([
     {
       bookingRef: 'BK-001',
@@ -53,7 +64,7 @@ const seed = async () => {
       boardType: 'bb',
       roomRate: '800',
       totalAmount: '1600',
-      marketSegment: 'direct_phone_mail',
+      marketSegmentId: segmentMap['direct_phone_mail'],
       specialRequests: 'Lit bébé'
     },
     {
@@ -69,7 +80,7 @@ const seed = async () => {
       roomRate: '1200',
       totalAmount: '8400',
       deposit: '2500',
-      marketSegment: 'ota_booking'
+      marketSegmentId: segmentMap['ota_booking']
     },
     {
       bookingRef: 'BK-003',
@@ -83,7 +94,7 @@ const seed = async () => {
       boardType: 'bb',
       roomRate: '950',
       totalAmount: '6650',
-      marketSegment: 'direct_walk_in'
+      marketSegmentId: segmentMap['direct_walk_in']
     },
     {
       bookingRef: 'BK-004',
@@ -97,12 +108,12 @@ const seed = async () => {
       roomRate: '2000',
       totalAmount: '14000',
       deposit: '7000',
-      marketSegment: 'b2b_corporate',
+      marketSegmentId: segmentMap['b2b_corporate'],
       specialRequests: 'Champagne au arrival'
     }
   ]);
 
-  console.log(`Seed: ${createdRooms.length} chambres, ${createdCustomers.length} clients, 4 réservations`);
+  console.log(`Seed: ${createdRooms.length} chambres, ${createdCustomers.length} clients, ${insertedSegments.length} segments, 4 réservations`);
   await pool.end();
 };
 
