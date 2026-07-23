@@ -1,18 +1,17 @@
 require('dotenv').config();
 const { Pool } = require('pg');
 const { drizzle } = require('drizzle-orm/node-postgres');
-const { eq } = require('drizzle-orm');
 const schema = require('./schema');
 const roomsTable = require('./schema/rooms');
 const customersTable = require('./schema/customers');
 const marketSegmentsTable = require('./schema/marketSegments');
-const bookingsTable = require('./schema/bookings');
+const foliosTable = require('./schema/folios');
 
 const seed = async () => {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
   const db = drizzle(pool, { schema });
 
-  await db.delete(bookingsTable);
+  await db.delete(foliosTable);
   await db.delete(customersTable);
   await db.delete(roomsTable);
 
@@ -34,86 +33,14 @@ const seed = async () => {
     { firstName: 'Emma', lastName: 'Dupont', email: 'emma@test.com', phone: '0600000004', nationality: 'France', idType: 'passport', idNumber: 'FR112233', notes: 'Client fidèle - préfère lit king' }
   ]).returning();
 
-  const today = new Date();
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const nextWeek = new Date(today);
-  nextWeek.setDate(nextWeek.getDate() + 7);
-  const yesterday = new Date(today);
-  yesterday.setDate(yesterday.getDate() - 1);
-
-  const insertedSegments = await db.insert(marketSegmentsTable).values([
+  await db.insert(marketSegmentsTable).values([
     { code: 'direct_phone_mail', label: 'Téléphone/Email direct' },
     { code: 'ota_booking', label: 'Réservation OTA' },
     { code: 'direct_walk_in', label: 'Walk-in direct' },
     { code: 'b2b_corporate', label: 'Corporate B2B' }
   ]).returning();
 
-  const segmentMap = Object.fromEntries(insertedSegments.map(s => [s.code, s.id]));
-
-  await db.insert(bookingsTable).values([
-    {
-      bookingRef: 'BK-001',
-      customerId: createdCustomers[0].id,
-      roomId: createdRooms[0].id,
-      status: 'checked_in',
-      checkInDate: yesterday.toISOString().slice(0, 10),
-      checkOutDate: tomorrow.toISOString().slice(0, 10),
-      actualCheckIn: yesterday.toISOString().slice(0, 10),
-      adults: 2,
-      boardType: 'bb',
-      roomRate: '800',
-      totalAmount: '1600',
-      marketSegmentId: segmentMap['direct_phone_mail'],
-      specialRequests: 'Lit bébé'
-    },
-    {
-      bookingRef: 'BK-002',
-      customerId: createdCustomers[1].id,
-      roomId: createdRooms[2].id,
-      status: 'confirmed',
-      checkInDate: today.toISOString().slice(0, 10),
-      checkOutDate: nextWeek.toISOString().slice(0, 10),
-      adults: 2,
-      children: 1,
-      boardType: 'dp',
-      roomRate: '1200',
-      totalAmount: '8400',
-      deposit: '2500',
-      marketSegmentId: segmentMap['ota_booking']
-    },
-    {
-      bookingRef: 'BK-003',
-      customerId: createdCustomers[2].id,
-      roomId: createdRooms[3].id,
-      status: 'option',
-      optionExpiryDate: new Date(today.getTime() + 24 * 60 * 60 * 1000),
-      checkInDate: tomorrow.toISOString().slice(0, 10),
-      checkOutDate: nextWeek.toISOString().slice(0, 10),
-      adults: 1,
-      boardType: 'bb',
-      roomRate: '950',
-      totalAmount: '6650',
-      marketSegmentId: segmentMap['direct_walk_in']
-    },
-    {
-      bookingRef: 'BK-004',
-      customerId: createdCustomers[3].id,
-      roomId: createdRooms[5].id,
-      status: 'confirmed',
-      checkInDate: today.toISOString().slice(0, 10),
-      checkOutDate: nextWeek.toISOString().slice(0, 10),
-      adults: 2,
-      boardType: 'pc',
-      roomRate: '2000',
-      totalAmount: '14000',
-      deposit: '7000',
-      marketSegmentId: segmentMap['b2b_corporate'],
-      specialRequests: 'Champagne au arrival'
-    }
-  ]);
-
-  console.log(`Seed: ${createdRooms.length} chambres, ${createdCustomers.length} clients, ${insertedSegments.length} segments, 4 réservations`);
+  console.log(`Seed: ${createdRooms.length} chambres, ${createdCustomers.length} clients, 4 segments`);
   await pool.end();
 };
 

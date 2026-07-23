@@ -1,9 +1,11 @@
 const { pgTable, uuid, varchar, decimal, boolean, text, timestamp, index } = require('drizzle-orm/pg-core');
-const bookings = require('./bookings');
 
 const folios = pgTable('folios', {
   id: uuid('id').primaryKey().defaultRandom(),
-  bookingId: uuid('booking_id').notNull().references(() => bookings.id),
+  bookingId: varchar('booking_id', { length: 50 }).notNull(),
+  bookingRef: varchar('booking_ref', { length: 30 }),
+  billToPartnerId: varchar('bill_to_partner_id', { length: 100 }),
+  billToLabel: varchar('bill_to_label', { length: 100 }),
   folioType: varchar('folio_type', { length: 5 }).notNull(),
   label: text('label').default(''),
   status: varchar('status', { length: 20 }).notNull().default('open'),

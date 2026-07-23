@@ -1,70 +1,35 @@
 const { eq, and, inArray, sql } = require('drizzle-orm');
 const db = require('../config/database');
-const bookingsTable = require('../schema/bookings');
 const roomsTable = require('../schema/rooms');
-const customersTable = require('../schema/customers');
-const marketSegmentsTable = require('../schema/marketSegments');
 const foliosTable = require('../schema/folios');
 const folioItemsTable = require('../schema/folioItems');
 const housekeepingClient = require('../src/services/housekeepingClient');
 const tarificationClient = require('../src/services/tarificationClient');
+const reservationsClient = require('../src/services/reservationsClient');
 
 exports.processCheckIn = async (req, res) => {
   try {
     const { bookingId } = req.params;
 
-    const [booking] = await db
-      .select({
-        id: bookingsTable.id,
-        bookingRef: bookingsTable.bookingRef,
-        status: bookingsTable.status,
-        locked: bookingsTable.locked,
-        roomId: bookingsTable.roomId,
-        customerId: bookingsTable.customerId,
-        checkInDate: bookingsTable.checkInDate,
-        checkOutDate: bookingsTable.checkOutDate,
-        optionExpiryDate: bookingsTable.optionExpiryDate,
-        roomRate: bookingsTable.roomRate,
-        boardType: bookingsTable.boardType,
-        billToPartnerId: bookingsTable.billToPartnerId,
-        billToLabel: bookingsTable.billToLabel,
-      })
-      .from(bookingsTable)
-      .where(eq(bookingsTable.id, bookingId))
-      .limit(1);
-
-    if (!booking) {
-      return res.status(404).json({ error: 'Réservation introuvable' });
-    }
+    const booking = await reservationsClient.getBookingById(bookingId);
 
     if (booking.locked) {
       return res.status(400).json({ error: 'Check-in impossible. Dossier verrouillé après check-out.' });
     }
 
-    if (booking.status !== 'confirmed' && booking.status !== 'voucher') {
+    const allowedStatuses = ['status_confirmed', 'status_voucher'];
+    if (!allowedStatuses.includes(booking.status)) {
       return res.status(400).json({ error: `Check-in impossible. Statut actuel: ${booking.status}` });
     }
 
-    if (booking.status === 'option' && (!booking.optionExpiryDate || new Date(booking.optionExpiryDate) < new Date())) {
-      return res.status(400).json({ error: 'Option expirée. Réservation non confirmée.' });
+    const roomNumber = booking.room?.number;
+    if (!roomNumber) {
+      return res.status(404).json({ error: 'Chambre introuvable dans la réservation' });
     }
 
-    const [room] = await db
-      .select()
-      .from(roomsTable)
-      .where(eq(roomsTable.id, booking.roomId))
-      .limit(1);
-
-    if (!room) {
-      return res.status(404).json({ error: 'Chambre introuvable' });
-    }
-
-    // Vérification synchrone de la source d'autorité réelle (housekeeping) afin d'éviter
-    // de baser le check-in sur un statut local obsolète. En cas d'échec réseau ou de timeout,
-    // le check-in est refusé par prudence (fail-closed) pour préserver l'intégrité métier.
     let freshRoomStatus;
     try {
-      freshRoomStatus = await housekeepingClient.getRoomStatusByNumero(room.roomNumber, req.headers.authorization);
+      freshRoomStatus = await housekeepingClient.getRoomStatusByNumero(roomNumber, req.headers.authorization);
     } catch (err) {
       return res.status(503).json({
         error: `Impossible de vérifier le statut de la chambre côté housekeeping: ${err.message}`,
@@ -75,10 +40,8 @@ exports.processCheckIn = async (req, res) => {
       return res.status(400).json({ error: `Chambre non prête. Statut: ${freshRoomStatus.statut}` });
     }
 
-    const today = new Date().toISOString().slice(0, 10);
-
     try {
-      await housekeepingClient.updateRoomStatusByNumero(room.roomNumber, 'sale', null, req.headers.authorization);
+      await housekeepingClient.updateRoomStatusByNumero(roomNumber, 'sale', null, req.headers.authorization);
     } catch (err) {
       return res.status(502).json({ error: `Impossible de synchroniser le statut de la chambre: ${err.message}` });
     }
@@ -93,22 +56,19 @@ exports.processCheckIn = async (req, res) => {
         if (seasonId) {
           const result = await tarificationClient.calculateRate({
             partnerId: booking.billToPartnerId,
-            category: room.category,
+            category: booking.room?.category,
             seasonId,
-            regime: booking.boardType || 'BB',
+            regime: booking.regime || 'BB',
             nights,
           }, req.headers.authorization);
 
           const prixNet = result?.details?.prixParNuitFinalTTC;
           if (prixNet && result.details.source === 'tarif_partenaire') {
             const newRate = parseFloat(prixNet);
-            const currentRate = parseFloat(booking.roomRate || 0);
+            const currentRate = booking.roomRate || 0;
             if (newRate !== currentRate) {
-              await db
-                .update(bookingsTable)
-                .set({ roomRate: String(newRate), updatedAt: new Date() })
-                .where(eq(bookingsTable.id, bookingId));
-              booking.roomRate = String(newRate);
+              await reservationsClient.updateBookingFields(bookingId, { roomRate: newRate });
+              booking.roomRate = newRate;
             }
           }
         }
@@ -117,23 +77,24 @@ exports.processCheckIn = async (req, res) => {
       }
     }
 
-    await db
-      .update(bookingsTable)
-      .set({ status: 'checked_in', actualCheckIn: today, updatedAt: new Date() })
-      .where(eq(bookingsTable.id, bookingId));
+    const today = new Date().toISOString().slice(0, 10);
 
-    const [customer] = await db
-      .select()
-      .from(customersTable)
-      .where(eq(customersTable.id, booking.customerId))
-      .limit(1);
+    await reservationsClient.updateBookingStatus(bookingId, 'status_checked_in');
+    await reservationsClient.updateBookingFields(bookingId, { actualCheckIn: new Date(today) });
+
+    const customer = booking.customer || null;
+    const guestLastName = booking.guest?.lastName || '';
+    const guestFirstName = booking.guest?.firstName || '';
 
     const [folioA] = await db
       .insert(foliosTable)
       .values({
         bookingId,
+        bookingRef: booking.reference || null,
+        billToPartnerId: booking.billToPartnerId || null,
+        billToLabel: booking.billToLabel || null,
         folioType: 'A',
-        label: `Folio Client - ${customer ? `${customer.firstName} ${customer.lastName}` : ''}`,
+        label: `Folio Client - ${customer ? `${customer.firstName || guestFirstName} ${customer.lastName || guestLastName}` : `${guestFirstName} ${guestLastName}`}`,
         status: 'open'
       })
       .returning();
@@ -142,6 +103,9 @@ exports.processCheckIn = async (req, res) => {
       .insert(foliosTable)
       .values({
         bookingId,
+        bookingRef: booking.reference || null,
+        billToPartnerId: booking.billToPartnerId || null,
+        billToLabel: booking.billToLabel || null,
         folioType: 'B',
         label: booking.billToPartnerId
           ? `Folio Prise en charge - ${booking.billToLabel || booking.billToPartnerId}`
@@ -153,76 +117,53 @@ exports.processCheckIn = async (req, res) => {
     res.json({
       message: 'Check-in effectué avec succès',
       booking: {
-        id: booking.id,
-        status: 'checked_in',
+        id: booking._id,
+        status: 'status_checked_in',
         actualCheckIn: today,
-        room: room.roomNumber
+        room: roomNumber
       },
       folios: {
         folioA: { id: folioA.id, type: 'A' },
         folioB: { id: folioB.id, type: 'B' }
       }
     });
- } catch (err) {
-  console.error('ERREUR CHECK-IN:', err.stack);
-  res.status(500).json({ error: err.message });
-}
+  } catch (err) {
+    console.error('ERREUR CHECK-IN:', err.stack);
+    res.status(500).json({ error: err.message });
+  }
 };
 
 exports.getCheckInDetails = async (req, res) => {
   try {
     const { bookingId } = req.params;
 
-    const [booking] = await db
-      .select()
-      .from(bookingsTable)
-      .where(eq(bookingsTable.id, bookingId))
-      .limit(1);
+    const booking = await reservationsClient.getBookingById(bookingId);
 
-    if (!booking) {
-      return res.status(404).json({ error: 'Réservation introuvable' });
-    }
-
-    const [customer] = await db
-      .select()
-      .from(customersTable)
-      .where(eq(customersTable.id, booking.customerId))
-      .limit(1);
-
-    const [room] = await db
-      .select()
-      .from(roomsTable)
-      .where(eq(roomsTable.id, booking.roomId))
-      .limit(1);
-
-    let marketSegmentLabel = null;
-    if (booking.marketSegmentId) {
-      const [segment] = await db
-        .select()
-        .from(marketSegmentsTable)
-        .where(eq(marketSegmentsTable.id, booking.marketSegmentId))
-        .limit(1);
-      marketSegmentLabel = segment ? segment.label : null;
-    }
+    const roomNumber = booking.room?.number || null;
+    const roomCategory = booking.room?.category || null;
 
     res.json({
       booking: {
-        id: booking.id,
-        ref: booking.bookingRef,
+        id: booking._id,
+        ref: booking.reference,
         status: booking.status,
-        customer,
-        room,
+        customer: booking.customer || null,
+        guest: booking.guest || null,
+        room: {
+          roomNumber,
+          category: roomCategory,
+        },
         checkInDate: booking.checkInDate,
         checkOutDate: booking.checkOutDate,
-        adults: booking.adults,
-        children: booking.children,
-        boardType: booking.boardType,
+        pax: booking.pax,
+        regime: booking.regime,
         roomRate: booking.roomRate,
-        totalAmount: booking.totalAmount,
+        estimatedTotal: booking.estimatedTotal,
         deposit: booking.deposit,
-        specialRequests: booking.specialRequests,
-        marketSegmentId: booking.marketSegmentId,
-        marketSegmentLabel
+        comments: booking.comments,
+        marketSegment: booking.marketSegment || null,
+        billToPartnerId: booking.billToPartnerId,
+        billToLabel: booking.billToLabel,
       }
     });
   } catch (err) {
@@ -234,74 +175,44 @@ exports.getProforma = async (req, res) => {
   try {
     const { bookingId } = req.params;
 
-    const [booking] = await db
-      .select({
-        id: bookingsTable.id,
-        bookingRef: bookingsTable.bookingRef,
-        status: bookingsTable.status,
-        roomId: bookingsTable.roomId,
-        customerId: bookingsTable.customerId,
-        checkInDate: bookingsTable.checkInDate,
-        checkOutDate: bookingsTable.checkOutDate,
-        adults: bookingsTable.adults,
-        children: bookingsTable.children,
-        boardType: bookingsTable.boardType,
-        roomRate: bookingsTable.roomRate,
-        deposit: bookingsTable.deposit,
-      })
-      .from(bookingsTable)
-      .where(eq(bookingsTable.id, bookingId))
-      .limit(1);
+    const booking = await reservationsClient.getBookingById(bookingId);
 
-    if (!booking) {
-      return res.status(404).json({ error: 'Réservation introuvable' });
-    }
-
-    const allowedStatuses = ['option', 'confirmed', 'voucher'];
+    const allowedStatuses = ['status_option', 'status_confirmed', 'status_voucher'];
     if (!allowedStatuses.includes(booking.status)) {
       return res.status(400).json({ error: `Pro-forma indisponible. Statut actuel: ${booking.status}` });
     }
 
-    const [customer] = await db
-      .select()
-      .from(customersTable)
-      .where(eq(customersTable.id, booking.customerId))
-      .limit(1);
-
-    const [room] = await db
-      .select()
-      .from(roomsTable)
-      .where(eq(roomsTable.id, booking.roomId))
-      .limit(1);
+    const roomNumber = booking.room?.number || null;
+    const guestLastName = booking.guest?.lastName || '';
+    const guestFirstName = booking.guest?.firstName || '';
 
     const checkIn = new Date(booking.checkInDate);
     const checkOut = new Date(booking.checkOutDate);
     const nights = Math.max(0, Math.round((checkOut - checkIn) / (1000 * 60 * 60 * 24)));
-    const roomRate = parseFloat(booking.roomRate || 0);
+    const roomRate = booking.roomRate || 0;
     const estimatedRoomAmount = roomRate * nights;
-    const deposit = parseFloat(booking.deposit || 0);
+    const deposit = booking.deposit?.amount || 0;
     const balanceDue = estimatedRoomAmount - deposit;
 
     res.json({
-      bookingId: booking.id,
-      bookingRef: booking.bookingRef,
+      bookingId: booking._id,
+      bookingRef: booking.reference,
       status: booking.status,
-      customer: customer ? {
-        id: customer.id,
-        firstName: customer.firstName,
-        lastName: customer.lastName
-      } : null,
-      room: room ? {
-        id: room.id,
-        roomNumber: room.roomNumber
-      } : null,
+      customer: booking.customer || null,
+      guest: {
+        firstName: guestFirstName,
+        lastName: guestLastName,
+      },
+      room: {
+        roomNumber,
+        category: booking.room?.category,
+      },
       stay: {
         checkInDate: booking.checkInDate,
         checkOutDate: booking.checkOutDate,
         nights,
-        adults: booking.adults,
-        children: booking.children,
-        boardType: booking.boardType
+        pax: booking.pax,
+        regime: booking.regime,
       },
       pricing: {
         roomRate,
@@ -310,8 +221,8 @@ exports.getProforma = async (req, res) => {
         balanceDue
       },
       notes: {
-        mode: 'static',
-        source: 'booking.roomRate'
+        mode: 'dynamic',
+        source: 'service-reservations'
       }
     });
   } catch (err) {
@@ -323,17 +234,9 @@ exports.cancelCheckIn = async (req, res) => {
   try {
     const { bookingId } = req.params;
 
-    const [booking] = await db
-      .select()
-      .from(bookingsTable)
-      .where(eq(bookingsTable.id, bookingId))
-      .limit(1);
+    const booking = await reservationsClient.getBookingById(bookingId);
 
-    if (!booking) {
-      return res.status(404).json({ error: 'Réservation introuvable' });
-    }
-
-    if (booking.status !== 'checked_in') {
+    if (booking.status !== 'status_checked_in') {
       return res.status(400).json({ error: 'Annulation impossible. Statut actuel: ' + booking.status });
     }
 
@@ -355,32 +258,25 @@ exports.cancelCheckIn = async (req, res) => {
       }
     }
 
-    const [room] = await db
-      .select({ roomNumber: roomsTable.roomNumber })
-      .from(roomsTable)
-      .where(eq(roomsTable.id, booking.roomId))
-      .limit(1);
-
-    if (!room) {
+    const roomNumber = booking.room?.number;
+    if (!roomNumber) {
       return res.status(404).json({ error: 'Chambre introuvable' });
     }
 
     try {
-      await housekeepingClient.updateRoomStatusByNumero(room.roomNumber, 'propre', null, req.headers.authorization);
+      await housekeepingClient.updateRoomStatusByNumero(roomNumber, 'propre', null, req.headers.authorization);
     } catch (err) {
       return res.status(502).json({ error: `Impossible de synchroniser le statut de la chambre: ${err.message}` });
     }
 
-    await db
-      .update(bookingsTable)
-      .set({ status: 'confirmed', actualCheckIn: null, updatedAt: new Date() })
-      .where(eq(bookingsTable.id, bookingId));
+    await reservationsClient.updateBookingStatus(bookingId, 'status_confirmed');
+    await reservationsClient.updateBookingFields(bookingId, { actualCheckIn: null });
 
     if (folioIds.length > 0) {
       await db.delete(foliosTable).where(eq(foliosTable.bookingId, bookingId));
     }
 
-    res.json({ message: 'Check-in annulé avec succès', booking });
+    res.json({ message: 'Check-in annulé avec succès', booking: { id: booking._id, status: 'status_confirmed' } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

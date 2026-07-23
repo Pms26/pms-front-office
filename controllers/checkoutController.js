@@ -1,29 +1,20 @@
 const { eq, and, asc } = require('drizzle-orm');
 const db = require('../config/database');
-const bookingsTable = require('../schema/bookings');
 const roomsTable = require('../schema/rooms');
-const customersTable = require('../schema/customers');
 const foliosTable = require('../schema/folios');
 const folioItemsTable = require('../schema/folioItems');
 const paymentsTable = require('../schema/payments');
 const housekeepingClient = require('../src/services/housekeepingClient');
+const reservationsClient = require('../src/services/reservationsClient');
 
 exports.processCheckOut = async (req, res) => {
   try {
     const { bookingId } = req.params;
     const { payments } = req.body;
 
-    const [booking] = await db
-      .select()
-      .from(bookingsTable)
-      .where(eq(bookingsTable.id, bookingId))
-      .limit(1);
+    const booking = await reservationsClient.getBookingById(bookingId);
 
-    if (!booking) {
-      return res.status(404).json({ error: 'Réservation introuvable' });
-    }
-
-    if (booking.status !== 'checked_in') {
+    if (booking.status !== 'status_checked_in') {
       return res.status(400).json({ error: `Check-out impossible. Statut actuel: ${booking.status}` });
     }
 
@@ -68,8 +59,6 @@ exports.processCheckOut = async (req, res) => {
       return res.status(400).json({ error: 'Le montant des paiements ne correspond pas au solde dû.' });
     }
 
-    // TODO: idempotence des paiements si retry après échec housekeeping
-    // Risk: if housekeeping.updateRoomStatusByNumero fails and checkout is retried, payments will be duplicated
     for (const payment of payments || []) {
       const folio = folios.find(f => f.folioType === (payment.folioType || 'A'));
       if (!folio) {
@@ -87,25 +76,19 @@ exports.processCheckOut = async (req, res) => {
       });
     }
 
-    const today = new Date().toISOString().slice(0, 10);
+    const roomNumber = booking.room?.number;
 
-    const [room] = await db
-      .select()
-      .from(roomsTable)
-      .where(eq(roomsTable.id, booking.roomId))
-      .limit(1);
-
-    // First try to notify housekeeping; if it fails we must not mark booking checked_out/locked
     try {
-      await housekeepingClient.updateRoomStatusByNumero(room ? room.roomNumber : null, 'sale', null, req.headers.authorization);
+      await housekeepingClient.updateRoomStatusByNumero(roomNumber, 'sale', null, req.headers.authorization);
     } catch (err) {
       return res.status(502).json({ error: `Impossible de synchroniser le statut de la chambre: ${err.message}` });
     }
 
-    await db
-      .update(bookingsTable)
-      .set({ status: 'checked_out', locked: true, actualCheckOut: today, updatedAt: new Date() })
-      .where(eq(bookingsTable.id, bookingId));
+    await reservationsClient.updateBookingStatus(bookingId, 'status_checked_out');
+    await reservationsClient.updateBookingFields(bookingId, {
+      actualCheckOut: new Date(),
+      locked: true,
+    });
 
     for (const folio of folios) {
       await db
@@ -114,16 +97,16 @@ exports.processCheckOut = async (req, res) => {
         .where(eq(foliosTable.id, folio.id));
     }
 
-    const totalDeposit = parseFloat(booking.deposit) || 0;
+    const totalDeposit = booking.deposit?.amount || 0;
     const remainingBalance = totalCharges - requestedPaymentTotal - totalDeposit;
 
     res.json({
       message: 'Check-out effectué avec succès',
       booking: {
-        id: booking.id,
-        status: 'checked_out',
-        actualCheckOut: today,
-        room: room ? room.roomNumber : null
+        id: booking._id,
+        status: 'status_checked_out',
+        actualCheckOut: new Date().toISOString().slice(0, 10),
+        room: roomNumber
       },
       summary: {
         totalCharges,
@@ -141,31 +124,15 @@ exports.getStatement = async (req, res) => {
   try {
     const { bookingId } = req.params;
 
-    const [booking] = await db
-      .select()
-      .from(bookingsTable)
-      .where(eq(bookingsTable.id, bookingId))
-      .limit(1);
+    const booking = await reservationsClient.getBookingById(bookingId);
 
-    if (!booking) {
-      return res.status(404).json({ error: 'Réservation introuvable' });
-    }
-
-    if (booking.status !== 'checked_in' && booking.status !== 'checked_out') {
+    if (booking.status !== 'status_checked_in' && booking.status !== 'status_checked_out') {
       return res.status(400).json({ error: 'Extrait disponible uniquement pour les séjours en cours ou terminés' });
     }
 
-    const [customer] = await db
-      .select()
-      .from(customersTable)
-      .where(eq(customersTable.id, booking.customerId))
-      .limit(1);
-
-    const [room] = await db
-      .select()
-      .from(roomsTable)
-      .where(eq(roomsTable.id, booking.roomId))
-      .limit(1);
+    const roomNumber = booking.room?.number || '';
+    const guestLastName = booking.guest?.lastName || '';
+    const guestFirstName = booking.guest?.firstName || '';
 
     const folios = await db
       .select()
@@ -207,9 +174,9 @@ exports.getStatement = async (req, res) => {
 
     res.json({
       booking: {
-        ref: booking.bookingRef,
-        customer: customer ? `${customer.firstName} ${customer.lastName}` : '',
-        room: room ? room.roomNumber : '',
+        ref: booking.reference,
+        customer: `${guestFirstName} ${guestLastName}`.trim(),
+        room: roomNumber,
         checkIn: booking.actualCheckIn,
         checkOut: booking.actualCheckOut || null,
         nights: Math.ceil((new Date(booking.checkOutDate) - new Date(booking.checkInDate)) / (1000 * 60 * 60 * 24))

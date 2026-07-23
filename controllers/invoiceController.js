@@ -2,7 +2,6 @@ const { eq, gte, lt, and, asc } = require('drizzle-orm');
 const db = require('../config/database');
 const foliosTable = require('../schema/folios');
 const folioItemsTable = require('../schema/folioItems');
-const bookingsTable = require('../schema/bookings');
 
 exports.getDayInvoices = async (req, res) => {
   try {
@@ -35,18 +34,12 @@ exports.getDayInvoices = async (req, res) => {
           .where(eq(folioItemsTable.folioId, folio.id))
           .orderBy(asc(folioItemsTable.date));
 
-        const [booking] = await db
-          .select()
-          .from(bookingsTable)
-          .where(eq(bookingsTable.id, folio.bookingId))
-          .limit(1);
-
         return {
           folioId: folio.id,
           bookingId: folio.bookingId,
-          bookingRef: booking ? booking.bookingRef : null,
-          billToPartnerId: booking ? booking.billToPartnerId : null,
-          billToLabel: booking ? booking.billToLabel : null,
+          bookingRef: folio.bookingRef || null,
+          billToPartnerId: folio.billToPartnerId || null,
+          billToLabel: folio.billToLabel || null,
           folioType: folio.folioType,
           label: folio.label,
           closedAt: folio.closedAt,

@@ -2,7 +2,6 @@ const { eq, and, inArray, asc } = require('drizzle-orm');
 const db = require('../config/database');
 const foliosTable = require('../schema/folios');
 const folioItemsTable = require('../schema/folioItems');
-const bookingsTable = require('../schema/bookings');
 
 exports.getFolio = async (req, res) => {
   try {

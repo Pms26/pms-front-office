@@ -1,10 +1,9 @@
 const { pgTable, uuid, varchar, decimal, text, timestamp, index } = require('drizzle-orm/pg-core');
-const bookings = require('./bookings');
 const folios = require('./folios');
 
 const payments = pgTable('payments', {
   id: uuid('id').primaryKey().defaultRandom(),
-  bookingId: uuid('booking_id').notNull().references(() => bookings.id),
+  bookingId: varchar('booking_id', { length: 50 }).notNull(),
   folioId: uuid('folio_id').notNull().references(() => folios.id),
   amount: decimal('amount', { precision: 12, scale: 2 }).notNull(),
   paymentMethod: varchar('payment_method', { length: 30 }).notNull(),
